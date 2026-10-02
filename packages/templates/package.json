@@ -1,0 +1,22 @@
+{
+  "name": "@opencred/templates",
+  "version": "1.0.0",
+  "license": "AGPL-3.0-or-later",
+  "description": "OpenCred starter template library. Templates are CC0 JSON documents; contribute a new one with a pull request.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "library"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node dist/generate.js",
+    "generate": "node dist/generate.js",
+    "test": "npm run build && node --test dist/__tests__/*.test.js"
+  },
+  "dependencies": {
+    "@opencred/schema": "1.0.0"
+  },
+  "devDependencies": {
+    "@opencred/renderer": "1.0.0",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

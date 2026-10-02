@@ -1,0 +1,29 @@
+{
+  "name": "@opencred/web",
+  "version": "1.0.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "description": "OpenCred admin dashboard, design studio, public verification pages and recipient wallet.",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "//start": "Not `next start`: it refuses to serve an `output: standalone` build and then behaves incorrectly, rendering error and not-found routes outside the root layout.",
+    "start": "node scripts/start-standalone.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencred/i18n": "1.0.0",
+    "@opencred/renderer": "1.0.0",
+    "@opencred/schema": "1.0.0",
+    "lucide-react": "^1.33.0",
+    "next": "^16.3.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "typescript": "^5.7.2"
+  }
+}

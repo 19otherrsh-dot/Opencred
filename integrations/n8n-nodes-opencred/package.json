@@ -1,0 +1,27 @@
+{
+  "name": "n8n-nodes-opencred",
+  "version": "1.0.0",
+  "description": "Issue and verify OpenCred credentials from an n8n workflow.",
+  "license": "MIT",
+  "keywords": ["n8n-community-node-package", "opencred", "credentials", "open-badges"],
+  "homepage": "https://github.com/opencred/opencred",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "dev": "tsc -p tsconfig.json --watch"
+  },
+  "files": ["dist"],
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": ["dist/credentials/OpenCredApi.credentials.js"],
+    "nodes": ["dist/nodes/OpenCred/OpenCred.node.js", "dist/nodes/OpenCred/OpenCredTrigger.node.js"]
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "n8n-workflow": "^1.70.0",
+    "typescript": "^5.7.2"
+  }
+}

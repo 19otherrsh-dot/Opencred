@@ -1,0 +1,35 @@
+{
+  "name": "OpenCred",
+  "short_name": "OpenCred",
+  "description": "Your verifiable credentials, in one place.",
+  "start_url": "/wallet",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f7f8fa",
+  "theme_color": "#1d4ed8",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "My credentials",
+      "url": "/wallet"
+    },
+    {
+      "name": "Verify a credential",
+      "url": "/verify"
+    }
+  ]
+}

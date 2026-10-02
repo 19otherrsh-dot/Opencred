@@ -1,0 +1,55 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "opencred.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "opencred.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    # Runs before the new pods start, so application code never meets a schema
+    # it does not know about. `hook-failed` is deliberately NOT in the delete
+    # policy: a failed migration's logs are the only useful artefact you have.
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 2
+  # Cleaned up automatically an hour after success.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "opencred.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "opencred.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - npx
+            - prisma
+            - migrate
+            - deploy
+            - --schema
+            - apps/api/prisma/schema.prisma
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "opencred.secretName" . }}
+                  key: database-url
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+{{- end }}

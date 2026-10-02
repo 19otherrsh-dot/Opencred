@@ -1,0 +1,145 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "opencred.fullname" . }}-worker
+  labels:
+    {{- include "opencred.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  {{- if not .Values.worker.autoscaling.enabled }}
+  replicas: {{ .Values.worker.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "opencred.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "opencred.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "opencred.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Workers finish the credential they are rendering before exiting. Two
+      # minutes is comfortably above the render timeout, so a rolling update
+      # never abandons a half-issued credential.
+      terminationGracePeriodSeconds: 120
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["node", "apps/api/dist/worker.js"]
+          env:
+            {{- include "opencred.commonEnv" . | nindent 12 }}
+            - name: OPENCRED_ROLE
+              value: worker
+            - name: ISSUANCE_CONCURRENCY
+              value: {{ .Values.worker.concurrency.issuance | quote }}
+            - name: WEBHOOK_CONCURRENCY
+              value: {{ .Values.worker.concurrency.webhook | quote }}
+            - name: RENDER_CONCURRENCY
+              value: {{ .Values.worker.concurrency.render | quote }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            # Chromium writes its profile and shared-memory files here, so /tmp
+            # must be writable even with a hardened root filesystem.
+            - name: tmp
+              mountPath: /tmp
+            - name: dshm
+              mountPath: /dev/shm
+            {{- if eq .Values.storage.driver "local" }}
+            - name: storage
+              mountPath: /app/var/storage
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            # Chromium's default 64MB /dev/shm causes tab crashes under
+            # concurrent rendering. This is the fix for the classic
+            # "Target closed" render failure.
+            sizeLimit: 512Mi
+        {{- if eq .Values.storage.driver "local" }}
+        - name: storage
+          persistentVolumeClaim:
+            claimName: {{ include "opencred.fullname" . }}-storage
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if .Values.worker.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "opencred.fullname" . }}-worker
+  labels:
+    {{- include "opencred.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "opencred.fullname" . }}-worker
+  minReplicas: {{ .Values.worker.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.worker.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.worker.autoscaling.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleUp:
+      # Bulk issuance arrives in bursts: a registrar uploads 10,000 rows at
+      # once. Scaling up conservatively would mean the batch finishes late.
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300
+{{- end }}
+{{- if eq .Values.storage.driver "local" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "opencred.fullname" . }}-storage
+  labels:
+    {{- include "opencred.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    # ReadWriteMany because any API replica may serve a download of a file any
+    # worker replica wrote. On a cluster without RWX support, use the S3 driver.
+    - ReadWriteMany
+  {{- if .Values.storage.local.storageClass }}
+  storageClassName: {{ .Values.storage.local.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.local.size }}
+{{- end }}

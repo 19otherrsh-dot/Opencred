@@ -1,0 +1,109 @@
+# OpenCred API and worker image.
+#
+# One image serves both roles; `OPENCRED_ROLE` and the command decide which.
+# That is deliberate: they share a dependency tree including Chromium, and two
+# images would double the pull size and the vulnerability surface for no gain.
+
+# ---------------------------------------------------------------- builder ----
+FROM node:22-bookworm-slim AS builder
+
+WORKDIR /app
+
+# Copy only manifests first so that `npm ci` is cached independently of source
+# changes. Editing a controller should not re-download the dependency tree.
+COPY package.json package-lock.json* ./
+COPY packages/schema/package.json ./packages/schema/
+COPY packages/credentials/package.json ./packages/credentials/
+COPY packages/renderer/package.json ./packages/renderer/
+COPY packages/templates/package.json ./packages/templates/
+COPY apps/api/package.json ./apps/api/
+COPY apps/web/package.json ./apps/web/
+COPY integrations/n8n-nodes-opencred/package.json ./integrations/n8n-nodes-opencred/
+
+# Playwright's own postinstall would download browsers into the builder layer,
+# where they would be thrown away. The runtime stage installs them instead.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+RUN npm ci --ignore-scripts
+
+COPY tsconfig.base.json ./
+COPY packages ./packages
+COPY apps/api ./apps/api
+
+RUN npm run build -w @opencred/schema \
+ && npm run build -w @opencred/credentials \
+ && npm run build -w @opencred/renderer \
+ && npm run build -w @opencred/templates \
+ && npx prisma generate --schema apps/api/prisma/schema.prisma \
+ && npx tsc -p apps/api/tsconfig.json
+
+# Drop dev dependencies from the tree we are about to copy forward.
+RUN npm prune --omit=dev
+
+# ---------------------------------------------------------------- runtime ----
+FROM node:22-bookworm-slim AS runtime
+
+ENV NODE_ENV=production \
+    OPENCRED_ROLE=all \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# Chromium's shared library dependencies. Installed explicitly rather than via
+# `playwright install --with-deps` so the layer is reproducible and auditable.
+RUN apt-get update && apt-get install --no-install-recommends -y \
+      ca-certificates \
+      fonts-liberation \
+      fonts-noto-core \
+      fonts-noto-cjk \
+      fonts-noto-color-emoji \
+      libasound2 \
+      libatk-bridge2.0-0 \
+      libatk1.0-0 \
+      libatspi2.0-0 \
+      libcairo2 \
+      libcups2 \
+      libdbus-1-3 \
+      libdrm2 \
+      libgbm1 \
+      libglib2.0-0 \
+      libnspr4 \
+      libnss3 \
+      libpango-1.0-0 \
+      libx11-6 \
+      libxcb1 \
+      libxcomposite1 \
+      libxdamage1 \
+      libxext6 \
+      libxfixes3 \
+      libxkbcommon0 \
+      libxrandr2 \
+      tini \
+      wget \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages ./packages
+COPY --from=builder /app/apps/api/dist ./apps/api/dist
+COPY --from=builder /app/apps/api/prisma ./apps/api/prisma
+COPY --from=builder /app/apps/api/package.json ./apps/api/package.json
+COPY --from=builder /app/package.json ./package.json
+
+# Only Chromium; Firefox and WebKit are not used and would triple the image.
+RUN npx playwright install chromium \
+ && chmod -R a+rx /ms-playwright
+
+# The local storage driver writes here when object storage is not configured.
+RUN mkdir -p /app/var/storage && chown -R node:node /app/var
+
+USER node
+
+EXPOSE 4000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget --spider -q http://127.0.0.1:4000/healthz || exit 1
+
+# tini reaps the zombie processes Chromium leaves behind. Without it a
+# long-running render worker slowly accumulates defunct children until it
+# exhausts the process table.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node", "apps/api/dist/main.js"]

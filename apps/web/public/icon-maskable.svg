@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="OpenCred">
+  <!-- Maskable variant: the mark sits inside the 40% safe zone so platform
+       masks (circle, squircle, rounded square) never clip it. -->
+  <rect width="64" height="64" fill="#1d4ed8"/>
+  <circle cx="32" cy="29" r="11" fill="none" stroke="#ffffff" stroke-width="3"/>
+  <path d="M27 29.5l3.6 3.6 6.8-7.2" fill="none" stroke="#ffffff" stroke-width="3"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M26 39l-2.5 9 8.5-4 8.5 4-2.5-9" fill="none" stroke="#ffffff"
+        stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,33 @@
+apiVersion: v2
+name: opencred
+description: |
+  OpenCred — the open-source, standards-native credentialing platform.
+  Issue Open Badges 3.0 and W3C Verifiable Credentials, self-hosted.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+home: https://github.com/opencred/opencred
+sources:
+  - https://github.com/opencred/opencred
+keywords:
+  - credentials
+  - open-badges
+  - verifiable-credentials
+  - certificates
+maintainers:
+  - name: OpenCred contributors
+    url: https://github.com/opencred/opencred
+
+# PostgreSQL and Valkey are optional subcharts so that `helm install` produces a
+# working system on a bare cluster. Production installs should disable both and
+# point at managed services — a database in a StatefulSet next to the app is a
+# fine demo and a poor backup story.
+dependencies:
+  - name: postgresql
+    version: "16.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: valkey
+    version: "2.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: valkey.enabled

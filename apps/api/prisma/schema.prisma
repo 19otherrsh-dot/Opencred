@@ -1,0 +1,539 @@
+// OpenCred data model.
+//
+// Two constraints shaped this schema more than anything else:
+//
+//  1. Multi-tenancy is by `organizationId` on every tenant-owned row, with a
+//     compound index leading on it. Cloud runs many orgs in one database;
+//     Community Edition runs exactly one. The same schema serves both, so an
+//     organisation can export from Cloud and import into a self-hosted install
+//     without a migration (§9.5).
+//
+//  2. A credential must stay verifiable if every other row is lost. The signed
+//     credential document, its hash, and its status-list coordinates all live
+//     on the Credential row itself rather than being reassembled from joins at
+//     verification time.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity and tenancy
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id           String  @id @default(uuid())
+  slug         String  @unique
+  name         String
+  description  String?
+  website      String?
+  contactEmail String?
+
+  // Section 12 packaging. `plan` is authoritative for feature gating; the
+  // Subscription row carries the billing period and external references.
+  plan       String  @default("free")
+  planStatus String  @default("active")
+  dataRegion String  @default("global")
+
+  // BrandingSettings (see @opencred/schema). Stored as JSON because it is
+  // read as a whole document by the renderer and never queried field-wise.
+  branding Json @default("{}")
+
+  // FR-ISS-07: per-org SMTP. Credentials inside are encrypted with the
+  // platform ENCRYPTION_KEY before they reach this column.
+  emailSettings Json @default("{}")
+
+  // FR-STD-03: the issuer's did:web identity, derived from the public origin
+  // or the verified custom domain.
+  did String?
+
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  memberships   Membership[]
+  apiKeys       ApiKey[]
+  auditLogs     AuditLog[]
+  issuerKeys    IssuerKey[]
+  statusLists   StatusList[]
+  templates     Template[]
+  recipients    Recipient[]
+  batches       Batch[]
+  credentials   Credential[]
+  events        CredentialEvent[]
+  webhooks      WebhookEndpoint[]
+  deliveries    WebhookDelivery[]
+  usageCounters UsageCounter[]
+  subscription  Subscription?
+  assets        Asset[]
+
+  @@index([plan])
+  @@map("organizations")
+}
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  emailVerifiedAt DateTime?
+  // Null for accounts that only ever authenticate through OAuth or a magic
+  // link — we never store a placeholder hash that could be brute-forced.
+  passwordHash    String?
+  name            String
+  avatarUrl       String?
+  locale          String    @default("en")
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  memberships   Membership[]
+  oauthAccounts OAuthAccount[]
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+model Membership {
+  id             String    @id @default(uuid())
+  userId         String
+  organizationId String
+  role           String    @default("viewer")
+  invitedById    String?
+  invitedAt      DateTime?
+  acceptedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId, role])
+  @@map("memberships")
+}
+
+model OAuthAccount {
+  id                String   @id @default(uuid())
+  userId            String
+  provider          String
+  providerAccountId String
+  email             String?
+  createdAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("oauth_accounts")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  // Only the hash is stored: a database disclosure must not hand out live
+  // sessions.
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  userAgent String?
+  ip        String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("refresh_tokens")
+}
+
+// Single-use tokens for email verification, password reset and the recipient
+// portal's passwordless login (FR-DEL-02).
+model SingleUseToken {
+  id             String    @id @default(uuid())
+  purpose        String
+  email          String
+  tokenHash      String    @unique
+  organizationId String?
+  metadata       Json      @default("{}")
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([email, purpose])
+  @@index([expiresAt])
+  @@map("single_use_tokens")
+}
+
+model ApiKey {
+  id             String    @id @default(uuid())
+  organizationId String
+  name           String
+  // Displayed in the UI so a key can be identified without revealing it.
+  prefix         String
+  keyHash        String    @unique
+  role           String    @default("issuer")
+  lastUsedAt     DateTime?
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("api_keys")
+}
+
+// FR-ID-05 — append-only. No update or delete path exists in the application.
+model AuditLog {
+  id             String   @id @default(uuid())
+  organizationId String
+  actorType      String
+  actorId        String?
+  actorLabel     String
+  action         String
+  targetType     String?
+  targetId       String?
+  metadata       Json     @default("{}")
+  ip             String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, action])
+  @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+// Issuer cryptographic identity
+// ---------------------------------------------------------------------------
+
+model IssuerKey {
+  id             String @id @default(uuid())
+  organizationId String
+  // Fragment in the DID document, e.g. `key-1`. Rotation adds `key-2` and
+  // leaves the old key resolvable so historic credentials keep verifying.
+  keyId          String
+  algorithm      String @default("Ed25519")
+  publicKeyMultibase String
+  // AES-256-GCM, keyed by ENCRYPTION_KEY. Never leaves the API process.
+  privateKeyEncrypted String
+  status         String    @default("active")
+  createdAt      DateTime  @default(now())
+  rotatedAt      DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, keyId])
+  @@index([organizationId, status])
+  @@map("issuer_keys")
+}
+
+model StatusList {
+  id             String   @id @default(uuid())
+  organizationId String
+  purpose        String   @default("revocation")
+  // Sequence number within the org: /status/{listIndex}
+  listIndex      Int      @default(1)
+  // The raw 131,072-bit bitstring. Stored uncompressed so a revocation is a
+  // single byte update rather than a decompress/recompress cycle.
+  bits           Bytes
+  assignedCount  Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  credentials  Credential[]
+
+  @@unique([organizationId, purpose, listIndex])
+  @@map("status_lists")
+}
+
+// ---------------------------------------------------------------------------
+// Templates and recipients
+// ---------------------------------------------------------------------------
+
+model Template {
+  id             String  @id @default(uuid())
+  organizationId String
+  name           String
+  description    String?
+  kind           String  @default("certificate")
+  // TemplateDocument JSON (see @opencred/schema).
+  document       Json
+  // Slug of the starter-library template this was created from, when any.
+  librarySlug    String?
+  thumbnailKey   String?
+  archivedAt     DateTime?
+  // Bumped on every save. Credentials record the version they rendered from,
+  // so a later template edit never silently rewrites issued history.
+  version        Int      @default(1)
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  credentials  Credential[]
+  batches      Batch[]
+
+  @@index([organizationId, archivedAt])
+  @@map("templates")
+}
+
+model Recipient {
+  id             String   @id @default(uuid())
+  organizationId String
+  email          String
+  name           String
+  externalId     String?
+  tags           String[] @default([])
+  metadata       Json     @default("{}")
+  // FR-GOV-01: set when a data-subject erasure request has been honoured.
+  // The row is kept (credentials must stay verifiable) but is stripped of
+  // personal data and marked here.
+  erasedAt       DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  credentials  Credential[]
+
+  // FR-REC-02 — de-duplication keys. Email is the primary identity; an
+  // external id (student number, HRIS id) is the tie-breaker for issuers
+  // whose recipients share or change addresses.
+  @@unique([organizationId, email])
+  @@unique([organizationId, externalId])
+  @@index([organizationId, createdAt])
+  @@map("recipients")
+}
+
+// ---------------------------------------------------------------------------
+// Issuance
+// ---------------------------------------------------------------------------
+
+model Batch {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  templateId     String
+  status         String   @default("draft")
+  totalCount     Int      @default(0)
+  processedCount Int      @default(0)
+  failedCount    Int      @default(0)
+  // Parsed rows awaiting confirmation, plus the column mapping that produced
+  // them. Held here so a validated upload survives a page reload.
+  rows           Json     @default("[]")
+  columnMapping  Json     @default("{}")
+  defaults       Json     @default("{}")
+  validation     Json     @default("{}")
+  options        Json     @default("{}")
+  scheduledAt    DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  template     Template     @relation(fields: [templateId], references: [id])
+  credentials  Credential[]
+
+  @@index([organizationId, status])
+  @@index([status, scheduledAt])
+  @@map("batches")
+}
+
+model Credential {
+  id             String  @id @default(uuid())
+  organizationId String
+  // Short, URL-safe, unguessable. This is what appears in the QR code and on
+  // the printed certificate, so it is optimised for being read aloud and
+  // retyped as well as for collision resistance.
+  publicId       String  @unique
+  batchId        String?
+  templateId     String
+  templateVersion Int    @default(1)
+  recipientId    String
+
+  kind        String  @default("certificate")
+  title       String
+  description String?
+  // Merge-field values for this row.
+  data        Json    @default("{}")
+  // Open Badges achievement metadata.
+  achievement Json    @default("{}")
+  tags        String[] @default([])
+
+  status           String    @default("issued")
+  issuedAt         DateTime  @default(now())
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  revocationReason String?
+
+  // The signed Open Badges 3.0 / W3C VC document, exactly as served.
+  credentialJson Json?
+  credentialHash String?
+  statusListId   String?
+  statusListIndex Int?
+
+  pdfKey       String?
+  pngKey       String?
+  thumbnailKey String?
+
+  emailStatus String    @default("pending")
+  emailSentAt DateTime?
+  emailError  String?
+
+  // FR-ISS-04 — makes a redelivered LMS webhook idempotent instead of
+  // double-issuing.
+  idempotencyKey String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  template     Template          @relation(fields: [templateId], references: [id])
+  recipient    Recipient         @relation(fields: [recipientId], references: [id])
+  batch        Batch?            @relation(fields: [batchId], references: [id])
+  statusList   StatusList?       @relation(fields: [statusListId], references: [id])
+  events       CredentialEvent[]
+
+  @@unique([organizationId, idempotencyKey])
+  // Two credentials must never share a status-list slot: revoking one would
+  // silently revoke the other. Allocation guarantees this arithmetically; the
+  // constraint is here so a future bug fails loudly instead of quietly
+  // revoking a stranger's credential.
+  @@unique([statusListId, statusListIndex])
+  @@index([organizationId, status, issuedAt])
+  @@index([organizationId, recipientId])
+  @@index([batchId])
+  @@index([status, expiresAt])
+  @@map("credentials")
+}
+
+model CredentialEvent {
+  id             String   @id @default(uuid())
+  organizationId String
+  credentialId   String
+  type           String
+  metadata       Json     @default("{}")
+  // Coarse only: country and a truncated address. Full IPs are not retained,
+  // which keeps verification analytics from becoming a tracking database.
+  country        String?
+  ip             String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  credential   Credential   @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@index([credentialId, createdAt])
+  @@index([organizationId, type, createdAt])
+  @@map("credential_events")
+}
+
+// ---------------------------------------------------------------------------
+// Integrations
+// ---------------------------------------------------------------------------
+
+model WebhookEndpoint {
+  id             String   @id @default(uuid())
+  organizationId String
+  url            String
+  description    String?
+  // Shared secret for the HMAC signature header.
+  secret         String
+  events         String[] @default([])
+  active         Boolean  @default(true)
+  failureCount   Int      @default(0)
+  lastSuccessAt  DateTime?
+  lastFailureAt  DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveries   WebhookDelivery[]
+
+  @@index([organizationId, active])
+  @@map("webhook_endpoints")
+}
+
+model WebhookDelivery {
+  id             String    @id @default(uuid())
+  organizationId String
+  endpointId     String
+  event          String
+  payload        Json
+  status         String    @default("pending")
+  attempts       Int       @default(0)
+  responseStatus Int?
+  responseBody   String?
+  error          String?
+  nextAttemptAt  DateTime?
+  deliveredAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  endpoint     WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@index([endpointId, createdAt])
+  @@index([status, nextAttemptAt])
+  @@map("webhook_deliveries")
+}
+
+model Asset {
+  id             String   @id @default(uuid())
+  organizationId String
+  key            String   @unique
+  filename       String
+  contentType    String
+  size           Int
+  purpose        String   @default("brand")
+  createdById    String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, purpose])
+  @@map("assets")
+}
+
+// ---------------------------------------------------------------------------
+// Billing (FR-BIL-01..03)
+// ---------------------------------------------------------------------------
+
+model Subscription {
+  id                 String    @id @default(uuid())
+  organizationId     String    @unique
+  plan               String    @default("free")
+  status             String    @default("active")
+  currentPeriodStart DateTime  @default(now())
+  currentPeriodEnd   DateTime
+  cancelAt           DateTime?
+  externalId         String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+model UsageCounter {
+  id                 String   @id @default(uuid())
+  organizationId     String
+  periodStart        DateTime
+  periodEnd          DateTime
+  credentialsIssued  Int      @default(0)
+  apiCalls           Int      @default(0)
+  verifications      Int      @default(0)
+  updatedAt          DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, periodStart])
+  @@map("usage_counters")
+}

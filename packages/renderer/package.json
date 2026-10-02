@@ -1,0 +1,30 @@
+{
+  "name": "@opencred/renderer",
+  "version": "1.0.0",
+  "license": "AGPL-3.0-or-later",
+  "description": "Template document to HTML/PDF/PNG rendering for OpenCred. Shared by the render workers and the design studio preview.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/__tests__/*.test.js"
+  },
+  "dependencies": {
+    "@opencred/schema": "1.0.0",
+    "qrcode": "^1.5.4"
+  },
+  "peerDependencies": {
+    "playwright-core": "^1.49.0"
+  },
+  "peerDependenciesMeta": {
+    "playwright-core": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/qrcode": "^1.5.5",
+    "typescript": "^5.7.2"
+  }
+}

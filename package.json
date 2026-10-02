@@ -1,0 +1,48 @@
+{
+  "name": "opencred",
+  "version": "1.0.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "description": "OpenCred — the open-source, standards-native credentialing platform.",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "packageManager": "npm@11.13.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "integrations/n8n-nodes-opencred"
+  ],
+  "scripts": {
+    "build:packages": "npm run build -w @opencred/schema && npm run build -w @opencred/credentials && npm run build -w @opencred/i18n && npm run build -w @opencred/renderer && npm run build -w @opencred/templates",
+    "build:api": "npm run build -w @opencred/api",
+    "build:web": "npm run build -w @opencred/web",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "dev": "turbo run dev",
+    "db:generate": "npm run db:generate -w @opencred/api",
+    "db:migrate": "npm run db:migrate -w @opencred/api",
+    "db:push": "npm run db:push -w @opencred/api",
+    "db:seed": "npm run db:seed -w @opencred/api",
+    "templates:build": "npm run generate -w @opencred/templates",
+    "dev:infra": "docker compose up -d postgres valkey minio mailpit",
+    "dev:api": "npm run dev -w @opencred/api",
+    "dev:worker": "npm run dev:worker -w @opencred/api",
+    "dev:web": "npm run dev -w @opencred/web",
+    "bootstrap": "node scripts/bootstrap.mjs",
+    "benchmark:issuance": "node scripts/benchmark-issuance.mjs",
+    "conformance:ob3": "node scripts/ob3-conformance.mjs",
+    "check:smoke": "node scripts/smoke-test.mjs",
+    "check:integrity": "node scripts/check-integrity.mjs",
+    "check:localisation": "node scripts/check-localisation.mjs",
+    "check:accessibility": "node scripts/check-accessibility.mjs",
+    "audit:prd": "node scripts/prd-audit.mjs",
+    "check:all": "npm run conformance:ob3 && npm run check:smoke && npm run check:integrity && npm run check:localisation && npm run check:accessibility && npm run audit:prd"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "turbo": "^2.10.11",
+    "typescript": "^5.7.2"
+  }
+}

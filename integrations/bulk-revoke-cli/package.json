@@ -1,0 +1,16 @@
+{
+  "name": "opencred-bulk-revoke-cli",
+  "version": "1.0.0",
+  "description": "A CLI tool to bulk revoke OpenCred credentials from a CSV file",
+  "main": "cli.js",
+  "scripts": {
+    "start": "node cli.js"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "csv-parser": "^3.0.0"
+  },
+  "bin": {
+    "opencred-revoke": "./cli.js"
+  }
+}

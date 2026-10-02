@@ -1,0 +1,188 @@
+# OpenCred Helm values.
+#
+# The defaults here run a working single-tenant installation on a small cluster.
+# Everything that must change for production is called out in a comment rather
+# than left for you to discover.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/opencred/opencred-api
+  webRepository: ghcr.io/opencred/opencred-web
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# --- Edition and public identity ---------------------------------------------
+opencred:
+  # community | enterprise. Neither is metered; `enterprise` additionally
+  # enables the commercially licensed module where it is installed.
+  edition: community
+
+  # MUST be the externally reachable HTTPS origin. It is embedded in every
+  # credential, every QR code and the issuer DID document — changing it later
+  # invalidates the DIDs of everything already issued.
+  publicUrl: https://credentials.example.edu
+  apiUrl: https://credentials.example.edu/api
+
+# --- Secrets ------------------------------------------------------------------
+# Generate with: openssl rand -base64 48
+#
+# Leave `existingSecret` empty and the chart creates a Secret from the values
+# below. In production, point `existingSecret` at a Secret managed by your own
+# tooling (External Secrets, Vault, SOPS) instead of putting these in values.
+secrets:
+  existingSecret: ""
+  jwtSecret: ""
+  encryptionKey: ""
+
+# --- Bundled dependencies ------------------------------------------------------
+postgresql:
+  enabled: true
+  auth:
+    username: opencred
+    password: change-me-in-production
+    database: opencred
+  primary:
+    persistence:
+      size: 20Gi
+
+valkey:
+  enabled: true
+  auth:
+    enabled: false
+  architecture: standalone
+
+# Point these at managed services when the subcharts above are disabled.
+externalDatabase:
+  url: ""
+externalValkey:
+  url: ""
+
+# --- Object storage ------------------------------------------------------------
+storage:
+  # local | s3. `local` requires a ReadWriteMany volume when the API runs more
+  # than one replica, because any replica may serve any download.
+  driver: s3
+  s3:
+    endpoint: https://s3.eu-west-1.amazonaws.com
+    region: eu-west-1
+    bucket: opencred
+    forcePathStyle: false
+    accessKeyId: ""
+    secretAccessKey: ""
+    existingSecret: ""
+  local:
+    size: 50Gi
+    storageClass: ""
+
+# --- Email --------------------------------------------------------------------
+mail:
+  transport: smtp
+  host: ""
+  port: 587
+  secure: false
+  user: ""
+  password: ""
+  from: "OpenCred <credentials@example.edu>"
+  existingSecret: ""
+
+# --- Workloads ----------------------------------------------------------------
+api:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+worker:
+  replicaCount: 2
+  concurrency:
+    issuance: 8
+    webhook: 16
+    render: 4
+  resources:
+    requests:
+      cpu: 500m
+      # Chromium is memory-hungry. Under-requesting here is the most common
+      # cause of workers being OOM-killed mid-batch.
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+
+web:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+# --- Networking ----------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Bulk CSV uploads can be large; the default 1MB body limit rejects a
+    # 10,000-row file with an unhelpful 413.
+    nginx.ingress.kubernetes.io/proxy-body-size: 64m
+  host: credentials.example.edu
+  apiPath: /api
+  tls:
+    enabled: true
+    secretName: opencred-tls
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false # Chromium needs a writable /tmp
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# --- Operations ----------------------------------------------------------------
+migrations:
+  # Runs `prisma migrate deploy` as a pre-upgrade hook, so the schema is in
+  # place before new pods start.
+  enabled: true
+
+metrics:
+  # Requires the Prometheus Operator CRDs.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+
+telemetry:
+  # Off by default and stays off unless you turn it on. A self-hosted install
+  # phoning home would contradict the entire premise of this project.
+  enabled: false
+  endpoint: ""

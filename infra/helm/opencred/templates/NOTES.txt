@@ -1,0 +1,48 @@
+OpenCred {{ .Chart.AppVersion }} is installing.
+
+  Web:  {{ if .Values.ingress.enabled }}https://{{ .Values.ingress.host }}{{ else }}port-forward svc/{{ include "opencred.fullname" . }}-web 3000{{ end }}
+  API:  {{ .Values.opencred.apiUrl }}
+  Docs: {{ .Values.opencred.apiUrl }}/docs
+
+Check it came up:
+
+  kubectl --namespace {{ .Release.Namespace }} rollout status deploy/{{ include "opencred.fullname" . }}-api
+  kubectl --namespace {{ .Release.Namespace }} rollout status deploy/{{ include "opencred.fullname" . }}-worker
+
+{{- if not .Values.secrets.existingSecret }}
+
+NOTE ON SECRETS
+---------------
+JWT_SECRET and ENCRYPTION_KEY were generated for you and stored in the Secret
+{{ include "opencred.fullname" . }}-secrets, which carries a `helm.sh/resource-policy: keep`
+annotation so upgrades do not regenerate them.
+
+ENCRYPTION_KEY is not rotatable in place. It decrypts every organisation's
+issuer private key and every stored SMTP password. Back it up somewhere you
+would trust with a database backup:
+
+  kubectl --namespace {{ .Release.Namespace }} get secret {{ include "opencred.fullname" . }}-secrets \
+    -o jsonpath='{.data.encryption-key}' | base64 -d
+{{- end }}
+
+{{- if .Values.postgresql.enabled }}
+
+NOTE ON THE BUNDLED DATABASE
+----------------------------
+You are running the bundled PostgreSQL subchart. That is fine for evaluation and
+poor for production: it has no backup schedule, no point-in-time recovery and no
+failover. Set `postgresql.enabled=false` and `externalDatabase.url` to a managed
+instance before you issue credentials people will rely on.
+{{- end }}
+
+{{- if not (hasPrefix "https://" .Values.opencred.publicUrl) }}
+
+WARNING
+-------
+opencred.publicUrl is not HTTPS. It is embedded in every credential and in the
+issuer DID document, and external verifiers resolve DIDs over HTTPS only. The
+API will refuse to start in production with this value.
+{{- end }}
+
+Next: open the web URL, create your workspace, and issue one credential to
+yourself. The verification page works immediately, with no login.

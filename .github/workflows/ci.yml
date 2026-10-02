@@ -1,0 +1,323 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # A weekly run catches dependency advisories that land after a merge, which
+    # is most of them.
+    - cron: '17 6 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fast feedback: types and unit tests, no services required.
+  # ---------------------------------------------------------------------------
+  unit:
+    name: Types and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci --ignore-scripts
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+
+      - name: Build shared packages
+        run: npm run build:packages
+
+      - name: Generate the Prisma client
+        run: npx prisma generate --schema apps/api/prisma/schema.prisma
+
+      - name: Typecheck the API
+        run: npx tsc -p apps/api/tsconfig.json --noEmit
+
+      - name: Typecheck the web app
+        run: npm run typecheck -w @opencred/web
+
+      - name: Unit tests
+        run: |
+          npm run test -w @opencred/schema
+          npm run test -w @opencred/credentials
+          npm run test -w @opencred/i18n
+          npm run test -w @opencred/renderer
+          npm run test -w @opencred/templates
+          npx tsc -p apps/api/tsconfig.json
+          node --test apps/api/dist/__tests__/*.test.js
+
+  # ---------------------------------------------------------------------------
+  # Standards conformance. Runs on every commit, from month one, exactly as the
+  # plan commits to — so a regression is caught by a pull request rather than by
+  # a certification submission four months later.
+  # ---------------------------------------------------------------------------
+  conformance:
+    name: Open Badges 3.0 conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+
+      - run: npm run build:packages
+
+      - name: Conformance gate
+        run: node scripts/ob3-conformance.mjs
+
+      - name: Refuse unearned certification claims
+        # The plan is explicit that nothing may be marketed as certified until
+        # 1EdTech confirms it. This makes that a build failure rather than a
+        # discipline problem.
+        run: |
+          set -e
+          if grep -rInE '(1EdTech|IMS Global)[- ]?(certified|certification (achieved|complete))' \
+               --include='*.md' --include='*.ts' --include='*.tsx' \
+               --exclude-dir=node_modules . ; then
+            echo "::error::Found a certification claim. OpenCred is not certified until 1EdTech lists it."
+            exit 1
+          fi
+          echo "No unearned certification claims found."
+
+  # ---------------------------------------------------------------------------
+  # The real thing: a live API, a live worker, real Chromium, real Postgres.
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: End-to-end
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: opencred
+          POSTGRES_PASSWORD: opencred
+          POSTGRES_DB: opencred
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U opencred"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
+      valkey:
+        image: valkey/valkey:8-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://opencred:opencred@localhost:5432/opencred?schema=public
+      VALKEY_URL: redis://localhost:6379
+      JWT_SECRET: ci-only-secret-not-used-anywhere-real-0000000000
+      ENCRYPTION_KEY: ci-only-encryption-key-not-used-anywhere-real-000
+      PUBLIC_URL: http://localhost:3000
+      API_URL: http://localhost:4000
+      OPENCRED_EDITION: community
+      MAIL_TRANSPORT: log
+      STORAGE_DRIVER: local
+      NODE_ENV: development
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+
+      - name: Install Chromium
+        # Without it the renderer degrades to SVG, which would still pass but
+        # would stop exercising the real PDF path.
+        run: npx playwright install --with-deps chromium
+
+      - run: npm run build:packages
+
+      - name: Generate the Prisma client
+        # Explicit because `npm ci --ignore-scripts` skips the postinstall that
+        # would otherwise do it.
+        run: npx prisma generate --schema apps/api/prisma/schema.prisma
+
+      - name: Apply migrations
+        # `migrate deploy` rather than `db push`, so CI exercises the exact path
+        # a production Helm upgrade takes. A migration that does not apply from
+        # empty fails here rather than in someone's cluster.
+        run: npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
+
+      - name: Check the schema and the migrations agree
+        # Catches the classic mistake of editing schema.prisma and shipping
+        # without generating the migration to match. Replaying the migrations
+        # needs its own throwaway database — pointing this at DATABASE_URL would
+        # reset the one the tests are about to use.
+        run: |
+          PGPASSWORD=opencred psql -h localhost -U opencred -d opencred \
+            -c "DROP DATABASE IF EXISTS shadow;" -c "CREATE DATABASE shadow;"
+          npx prisma migrate diff \
+            --from-migrations apps/api/prisma/migrations \
+            --to-schema-datamodel apps/api/prisma/schema.prisma \
+            --shadow-database-url "postgresql://opencred:opencred@localhost:5432/shadow?schema=public" \
+            --exit-code
+          echo "Schema and migrations are in sync."
+
+      - run: npx tsc -p apps/api/tsconfig.json
+
+      - name: Start the API and worker
+        run: |
+          node apps/api/dist/main.js   > /tmp/api.log    2>&1 &
+          node apps/api/dist/worker.js > /tmp/worker.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:4000/healthz > /dev/null; then
+              echo "API is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "API failed to start"; cat /tmp/api.log; exit 1
+
+      - name: Smoke test
+        run: node scripts/smoke-test.mjs
+
+      - name: Conformance against the live API
+        run: node scripts/ob3-conformance.mjs --api http://localhost:4000
+
+      - name: Integrity audit
+        run: node scripts/check-integrity.mjs
+
+      - name: Start the web app
+        # The localisation check needs a real server: locale negotiation happens
+        # during server rendering, and a unit test cannot catch a page that
+        # silently falls back to English.
+        run: |
+          npm run build -w @opencred/web
+          npm run start -w @opencred/web > /tmp/web.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:3000/verify > /dev/null; then
+              echo "Web is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Web failed to start"; cat /tmp/web.log; exit 1
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:4000
+          NEXT_PUBLIC_PUBLIC_URL: http://localhost:3000
+
+      - name: Localisation and right-to-left
+        run: node scripts/check-localisation.mjs
+
+      - name: Accessibility structure
+        run: node scripts/check-accessibility.mjs
+
+      - name: PRD acceptance criteria
+        run: node scripts/prd-audit.mjs
+
+      - name: Issuance benchmark
+        # A reduced volume: a GitHub runner is not a capacity test, but a large
+        # regression in per-credential cost still shows up here.
+        run: node scripts/benchmark-issuance.mjs --count 250
+
+      - name: Service logs
+        if: failure()
+        run: |
+          echo "───── api ─────";    tail -n 200 /tmp/api.log
+          echo "───── worker ─────"; tail -n 200 /tmp/worker.log
+          echo "───── web ─────";    tail -n 200 /tmp/web.log || true
+
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build the web app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+
+      - run: npm run build:packages
+
+      - name: Next.js production build
+        run: npm run build -w @opencred/web
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:4000
+          NEXT_PUBLIC_PUBLIC_URL: http://localhost:3000
+
+  # ---------------------------------------------------------------------------
+  # "Open-source components are only as safe as their patch cadence — a standing
+  # operational commitment, not a one-time claim."
+  # ---------------------------------------------------------------------------
+  security:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+
+      - name: npm audit
+        run: npm audit --audit-level=high
+
+      - name: Check for accidental secrets
+        run: |
+          set -e
+          # The development placeholders belong in exactly two places: the
+          # example env file, and the production guard in config.ts that
+          # refuses to boot when it sees them. docker-compose.yml carries them
+          # as shell defaults so a first `docker compose up` works, which is
+          # intentional and is why it is excluded here.
+          if grep -rIn 'dev-only-insecure' \
+               --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' \
+               --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.next . \
+             | grep -v 'apps/api/src/config.ts'; then
+            echo "::error::A development placeholder secret leaked into application source"
+            exit 1
+          fi
+          echo "No stray placeholder secrets."
+
+  helm:
+    name: Lint the Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      - name: Lint
+        run: helm lint infra/helm/opencred --set opencred.publicUrl=https://example.edu
+
+      - name: Render the templates
+        run: |
+          helm template opencred infra/helm/opencred \
+            --set opencred.publicUrl=https://example.edu \
+            --set secrets.jwtSecret=x --set secrets.encryptionKey=y > /dev/null
+          echo "Chart renders."

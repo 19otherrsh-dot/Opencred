@@ -1,0 +1,67 @@
+# Docker build context.
+#
+# Without this, `docker build` uploads the entire working tree — including
+# ~840 MB of node_modules and every Chromium download — to the daemon before it
+# runs a single instruction. The Dockerfiles install their own dependencies from
+# the lockfile, so none of it is wanted.
+
+# Dependencies: reinstalled inside the image from package-lock.json.
+node_modules/
+**/node_modules/
+.pnpm-store/
+
+# Build output: rebuilt inside the image. Copying a host build in would also
+# risk shipping artefacts compiled against a different libc.
+dist/
+**/dist/
+.next/
+**/.next/
+out/
+**/out/
+*.tsbuildinfo
+
+# Caches
+.turbo/
+.cache/
+**/.cache/
+coverage/
+
+# Local runtime state
+var/
+storage/
+tmp/
+*.log
+
+# Secrets. The example file is kept because it documents the configuration
+# surface; the real one must never enter an image layer.
+.env
+.env.*
+!.env.example
+
+# Version control and CI
+.git/
+.gitignore
+.github/
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Infrastructure that is applied, not built into an image
+infra/tofu/
+infra/helm/
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Docs and integrations. The API and web images need neither; the Moodle plugin
+# and the n8n node are published separately.
+docs/
+integrations/
+*.md
+!README.md
+
+# The generated template library IS needed — the API serves it — so it is
+# deliberately not excluded here.

@@ -1,0 +1,17 @@
+{
+  "name": "@opencred/wallet",
+  "version": "1.0.0",
+  "license": "AGPL-3.0-or-later",
+  "description": "Apple Wallet and Google Wallet pass generation for OpenCred credentials.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/__tests__/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

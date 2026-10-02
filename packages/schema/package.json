@@ -1,0 +1,20 @@
+{
+  "name": "@opencred/schema",
+  "version": "1.0.0",
+  "license": "AGPL-3.0-or-later",
+  "description": "Shared OpenCred domain schemas: template documents, credential payloads, roles, plans, merge fields.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "test": "npm run build && node --test dist/__tests__/*.test.js"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

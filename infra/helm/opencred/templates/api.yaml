@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "opencred.fullname" . }}-api
+  labels:
+    {{- include "opencred.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  {{- if not .Values.api.autoscaling.enabled }}
+  replicas: {{ .Values.api.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "opencred.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        {{- include "opencred.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+      annotations:
+        # Roll the pods when configuration changes, so a secret rotation does
+        # not sit unapplied until the next unrelated deploy.
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "opencred.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["node", "apps/api/dist/main.js"]
+          env:
+            {{- include "opencred.commonEnv" . | nindent 12 }}
+            - name: OPENCRED_ROLE
+              value: api
+            - name: PORT
+              value: "4000"
+          ports:
+            - name: http
+              containerPort: 4000
+          livenessProbe:
+            # Deliberately /healthz, not /readyz: a database blip must not cause
+            # Kubernetes to restart every API pod and turn a hiccup into an
+            # outage.
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if eq .Values.storage.driver "local" }}
+            - name: storage
+              mountPath: /app/var/storage
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if eq .Values.storage.driver "local" }}
+        - name: storage
+          persistentVolumeClaim:
+            claimName: {{ include "opencred.fullname" . }}-storage
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "opencred.fullname" . }}-api
+  labels:
+    {{- include "opencred.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 4000
+      targetPort: http
+      name: http
+  selector:
+    {{- include "opencred.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+{{- if .Values.api.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "opencred.fullname" . }}-api
+  labels:
+    {{- include "opencred.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "opencred.fullname" . }}-api
+  minReplicas: {{ .Values.api.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.api.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.api.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

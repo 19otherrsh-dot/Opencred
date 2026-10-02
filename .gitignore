@@ -1,0 +1,37 @@
+node_modules/
+dist/
+build/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+.turbo/
+
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Local object storage driver + rendered artefacts
+var/
+storage/
+tmp/
+# ...but not the storage service source, which the bare `storage/` above would match
+!apps/api/src/modules/storage/
+
+# Generated template library output (regenerate with `npm run templates:build`)
+packages/templates/library/*.json
+!packages/templates/library/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Terraform / OpenTofu
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl

@@ -1,0 +1,144 @@
+# OpenCred — local development and single-node self-hosted stack.
+#
+#   docker compose up -d postgres valkey minio mailpit   # infra only (dev)
+#   docker compose --profile full up -d                  # whole platform
+#
+# Every service here is open source. There is no OpenCred-operated dependency:
+# a Community Edition install works with this file alone.
+
+name: opencred
+
+x-app-env: &app-env
+  NODE_ENV: production
+  OPENCRED_EDITION: ${OPENCRED_EDITION:-community}
+  DATABASE_URL: postgresql://opencred:opencred@postgres:5432/opencred?schema=public
+  VALKEY_URL: redis://valkey:6379
+  PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+  API_URL: ${API_URL:-http://localhost:4000}
+  JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-jwt-secret-change-me-0000000000}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:-dev-only-insecure-encryption-key-change-me-000000}
+  STORAGE_DRIVER: s3
+  S3_ENDPOINT: http://minio:9000
+  S3_BUCKET: opencred
+  S3_ACCESS_KEY_ID: opencred
+  S3_SECRET_ACCESS_KEY: opencred123
+  S3_FORCE_PATH_STYLE: "true"
+  MAIL_TRANSPORT: smtp
+  MAIL_HOST: mailpit
+  MAIL_PORT: "1025"
+  MAIL_SECURE: "false"
+  MAIL_FROM: ${MAIL_FROM:-OpenCred <no-reply@localhost>}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: opencred
+      POSTGRES_PASSWORD: opencred
+      POSTGRES_DB: opencred
+    # Published ports are configurable because a developer machine frequently
+    # already has something on 5432. Override in .env, not in this file.
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opencred -d opencred"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Valkey, not Redis: the BSD-3-Clause community fork created after the 2024
+  # relicensing. Wire-compatible, so BullMQ and ioredis need no changes.
+  valkey:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: ["valkey-server", "--appendonly", "yes"]
+    ports:
+      - "${VALKEY_PORT:-6379}:6379"
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: opencred
+      MINIO_ROOT_PASSWORD: opencred123
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Dev-only SMTP sink so delivery emails are inspectable at localhost:8025.
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+
+  api:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.api
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      OPENCRED_ROLE: api
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      valkey: { condition: service_healthy }
+      minio: { condition: service_healthy }
+
+  worker:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.api
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      OPENCRED_ROLE: worker
+    command: ["node", "dist/worker.js"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      valkey: { condition: service_healthy }
+      minio: { condition: service_healthy }
+
+  web:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_URL: http://api:4000
+      NEXT_PUBLIC_API_URL: ${API_URL:-http://localhost:4000}
+      NEXT_PUBLIC_PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  postgres-data:
+  valkey-data:
+  minio-data:

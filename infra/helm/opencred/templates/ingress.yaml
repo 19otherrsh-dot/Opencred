@@ -1,0 +1,51 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "opencred.fullname" . }}
+  labels:
+    {{- include "opencred.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          # The API path is listed first: Ingress controllers match the longest
+          # prefix, but ordering makes the intent explicit to a reader.
+          - path: {{ .Values.ingress.apiPath }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "opencred.fullname" . }}-api
+                port:
+                  number: 4000
+          # `.well-known` must be served by the API: it hosts the issuer DID
+          # document that every external verifier resolves.
+          - path: /.well-known
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "opencred.fullname" . }}-api
+                port:
+                  number: 4000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "opencred.fullname" . }}-web
+                port:
+                  number: 3000
+{{- end }}
